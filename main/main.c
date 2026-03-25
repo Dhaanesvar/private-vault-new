@@ -1,18 +1,22 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
 #include "esp_http_server.h"
+#include "esp_netif.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #define WIFI_SSID "VaultESP"
 #define WIFI_PASS "12345678"
 
-#define LOGIN_USER "admin"
-#define LOGIN_PASS "admin123"
+#define LOGIN_USER "Dhaanes"
+#define LOGIN_PASS "1234"
+
+#define MAX_ENTRIES 20
 
 static const char *TAG = "vault";
 
@@ -24,22 +28,22 @@ typedef struct {
     char password[40];
 } vault_entry;
 
-#define MAX_ENTRIES 10
 vault_entry vault[MAX_ENTRIES];
 int entry_count = 0;
 
-/* ================= UI ================= */
+/* ================= LOGIN PAGE ================= */
 
 const char *login_page =
 "<html><head><style>"
-"body{font-family:sans-serif;background:#f4f6fb;text-align:center;}"
-".box{margin-top:100px;background:white;padding:30px;border-radius:10px;display:inline-block;box-shadow:0 4px 10px rgba(0,0,0,0.1);}"
-"input{margin:8px;padding:10px;width:200px;border-radius:6px;border:1px solid #ccc;}"
+"body{font-family:sans-serif;background:#eef2f7;text-align:center;}"
+".box{margin-top:120px;background:white;padding:30px;border-radius:12px;"
+"box-shadow:0 4px 12px rgba(0,0,0,0.1);display:inline-block;}"
+"input{margin:10px;padding:10px;width:220px;border-radius:6px;border:1px solid #ccc;}"
 "button{padding:10px 20px;background:#4CAF50;color:white;border:none;border-radius:6px;cursor:pointer;}"
 "</style></head><body>"
 
 "<div class='box'>"
-"<h2>Login</h2>"
+"<h2>Private Vault Login</h2>"
 "<form action='/login' method='post'>"
 "<input name='user' placeholder='Username'><br>"
 "<input name='pass' type='password' placeholder='Password'><br>"
@@ -49,19 +53,20 @@ const char *login_page =
 
 "</body></html>";
 
+/* ================= ENTRY + DASHBOARD PAGE ================= */
+
 const char *dashboard_page =
 "<html><head><style>"
-"body{font-family:sans-serif;background:#eef2f7;margin:0;padding:20px;}"
-".card{background:white;padding:20px;border-radius:12px;box-shadow:0 4px 10px rgba(0,0,0,0.1);margin-bottom:20px;}"
-"h2{margin-top:0;}"
+"body{font-family:sans-serif;background:#f4f7fb;padding:20px;}"
+".card{background:white;padding:20px;border-radius:12px;"
+"box-shadow:0 4px 10px rgba(0,0,0,0.1);margin-bottom:20px;}"
 "input{margin:5px;padding:10px;border-radius:6px;border:1px solid #ccc;width:30%;}"
 "button{padding:10px 20px;background:#007BFF;color:white;border:none;border-radius:6px;cursor:pointer;}"
 ".entry{padding:10px;border-bottom:1px solid #eee;}"
-".entry b{color:#333;}"
 "</style></head><body>"
 
 "<div class='card'>"
-"<h2>Add Password</h2>"
+"<h2>Add Entry</h2>"
 "<form action='/save' method='post'>"
 "<input name='website' placeholder='Website'>"
 "<input name='username' placeholder='Email'>"
@@ -77,7 +82,7 @@ const char *dashboard_page =
 "</div>"
 
 "<script>"
-"function loadData(){"
+"function load(){"
 "fetch('/vault').then(r=>r.json()).then(d=>{"
 "let html='';"
 "d.forEach(e=>{"
@@ -86,7 +91,7 @@ const char *dashboard_page =
 "document.getElementById('data').innerHTML = html;"
 "});"
 "}"
-"loadData();"
+"load();"
 "</script>"
 
 "</body></html>";
@@ -104,12 +109,12 @@ esp_err_t login_post(httpd_req_t *req) {
     if (len <= 0) return ESP_FAIL;
     buf[len] = 0;
 
-    if (strstr(buf, "user=admin") && strstr(buf, "pass=admin123")) {
+    if (strstr(buf, "user=Dhaanes") && strstr(buf, "pass=1234")) {
         httpd_resp_set_status(req, "302 Found");
         httpd_resp_set_hdr(req, "Location", "/dashboard");
         httpd_resp_send(req, NULL, 0);
     } else {
-        httpd_resp_send(req, "Login Failed", HTTPD_RESP_USE_STRLEN);
+        httpd_resp_send(req, "Wrong Login", HTTPD_RESP_USE_STRLEN);
     }
     return ESP_OK;
 }
@@ -141,20 +146,39 @@ esp_err_t save_handler(httpd_req_t *req) {
 }
 
 esp_err_t vault_handler(httpd_req_t *req) {
-    char buffer[1024];
-    strcpy(buffer, "[");
+    char buffer[1500];
+    buffer[0] = '\0';
+
+    strcat(buffer, "[");
 
     for (int i = 0; i < entry_count; i++) {
-        char temp[200];
 
-        snprintf(temp, sizeof(temp),
-                 "{\"website\":\"%s\",\"username\":\"%s\",\"password\":\"%s\"}%s",
-                 vault[i].website,
-                 vault[i].username,
-                 vault[i].password,
-                 (i < entry_count - 1) ? "," : "");
+        size_t remaining = sizeof(buffer) - strlen(buffer) - 1;
 
-        strcat(buffer, temp);
+        strncat(buffer, "{\"website\":\"", remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, vault[i].website, remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, "\",\"username\":\"", remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, vault[i].username, remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, "\",\"password\":\"", remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, vault[i].password, remaining);
+
+        remaining = sizeof(buffer) - strlen(buffer) - 1;
+        strncat(buffer, "\"}", remaining);
+
+        if (i < entry_count - 1) {
+            remaining = sizeof(buffer) - strlen(buffer) - 1;
+            strncat(buffer, ",", remaining);
+        }
     }
 
     strcat(buffer, "]");
@@ -222,7 +246,7 @@ void app_main(void) {
 
     wifi_init_softap();
 
-    vTaskDelay(pdMS_TO_TICKS(2000)); // prevent crash
+    vTaskDelay(pdMS_TO_TICKS(2000)); // FIX crash
 
     start_server();
 
